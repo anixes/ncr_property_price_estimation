@@ -1,61 +1,77 @@
 # NCR Property Price Estimation
 
-<a target="_blank" href="https://cookiecutter-data-science.drivendata.org/">
-    <img src="https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter" />
-</a>
+**Status:** Active development
 
-End-to-end data science system for estimating residential property prices in the NCR region, covering data processing, model development, deployment, and lifecycle management.
+---
 
-## Project Organization
+## Overview
+This project aims to build a production-style machine learning system for estimating residential property prices across the National Capital Region (NCR) of India.
 
-```
-├── LICENSE            <- Open-source license if one is chosen
-├── Makefile           <- Makefile with convenience commands like `make data` or `make train`
-├── README.md          <- The top-level README for developers using this project.
-├── data
-│   ├── external       <- Data from third party sources.
-│   ├── interim        <- Intermediate data that has been transformed.
-│   ├── processed      <- The final, canonical data sets for modeling.
-│   └── raw            <- The original, immutable data dump.
-│
-├── docs               <- A default mkdocs project; see www.mkdocs.org for details
-│
-├── models             <- Trained and serialized models, model predictions, or model summaries
-│
-├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-│                         the creator's initials, and a short `-` delimited description, e.g.
-│                         `1.0-jqp-initial-data-exploration`.
-│
-├── pyproject.toml     <- Project configuration file with package metadata for 
-│                         ncr_property_price_estimation and configuration for tools like black
-│
-├── references         <- Data dictionaries, manuals, and all other explanatory materials.
-│
-├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-│   └── figures        <- Generated graphics and figures to be used in reporting
-│
-├── requirements.txt   <- The requirements file for reproducing the analysis environment, e.g.
-│                         generated with `pip freeze > requirements.txt`
-│
-├── setup.cfg          <- Configuration file for flake8
-│
-└── ncr_property_price_estimation   <- Source code for use in this project.
-    │
-    ├── __init__.py             <- Makes ncr_property_price_estimation a Python module
-    │
-    ├── config.py               <- Store useful variables and configuration
-    │
-    ├── dataset.py              <- Scripts to download or generate data
-    │
-    ├── features.py             <- Code to create features for modeling
-    │
-    ├── modeling                
-    │   ├── __init__.py 
-    │   ├── predict.py          <- Code to run model inference with trained models          
-    │   └── train.py            <- Code to train models
-    │
-    └── plots.py                <- Code to create visualizations
-```
+The focus extends beyond predictive performance to include reproducibility, modular system design, data versioning, and deployment readiness — reflecting real-world data science practices.
 
---------
+---
+
+## Business Objective
+Accurate property valuation is essential for buyers, sellers, and real estate platforms. Mispricing can lead to financial loss, delayed transactions, and inefficient market behavior.
+
+The goal of this system is to generate reliable price estimates using property characteristics, location-based signals, and data-driven modeling techniques.
+
+---
+
+## Project Goals
+- Build an end-to-end machine learning pipeline  
+- Implement robust feature engineering  
+- Compare multiple modeling approaches  
+- Ensure reproducibility of datasets and experiments  
+- Prepare the system for production deployment  
+- Integrate CI/CD workflows for automated validation  
+
+---
+
+## Planned Tech Stack
+*(Will evolve as the project progresses)*
+
+- Python  
+- Pandas and NumPy  
+- Scikit-learn / Gradient Boosting models  
+- DVC for data and model versioning  
+- GitHub Actions for CI/CD  
+- FastAPI for model serving  
+- Docker for containerization  
+
+---
+
+## Dataset
+The dataset will be added in the next phase of the project.
+
+Raw data will not be stored in this repository due to size constraints. Instructions for accessing the dataset will be provided once finalized.
+
+---
+
+## Project Status
+**Current Stage:** Repository initialization and project structuring  
+
+**Next Steps:**
+1. Acquire and validate dataset  
+2. Perform exploratory data analysis  
+3. Establish a baseline model  
+4. Build a reproducible training pipeline  
+5. Introduce data versioning with DVC  
+6. Deploy an inference API  
+
+---
+
+## Repository Structure
+This repository follows a modular architecture inspired by production machine learning systems. Data, features, modeling logic, and configuration are separated to support maintainability and scalability.
+
+---
+
+## Why This Project
+Many portfolio projects focus solely on model training. This project is designed to demonstrate production-aware data science, where reliability, reproducibility, and system design are treated as primary concerns.
+
+---
+
+## Author
+Animesh Dwivedi
+
 
