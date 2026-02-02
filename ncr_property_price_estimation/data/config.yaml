@@ -2,38 +2,41 @@
 # ============================================
 
 # City configurations for NCR region
+# TIP: Comment out cities to scrape one at a time (recommended to avoid CAPTCHA)
 cities:
-  - name: "Noida"
-    url: "https://www.99acres.com/property-in-noida-ffid?page={}"
-    target_count: 8000
-    
+  # ✅ COMPLETED: Noida (686 listings)
+  # - name: "Noida"
+  #   url: "https://www.99acres.com/property-in-noida-ffid?page={}"
+  #   target_count: 8000
+
+  # 🔄 NEXT: Uncomment ONE city at a time
   - name: "Gurgaon"
     url: "https://www.99acres.com/property-in-gurgaon-ffid?page={}"
     target_count: 8000
-    
-  - name: "Greater Noida"
-    url: "https://www.99acres.com/property-in-greater-noida-ffid?page={}"
-    target_count: 8000
-    
-  - name: "Ghaziabad"
-    url: "https://www.99acres.com/property-in-ghaziabad-ffid?page={}"
-    target_count: 8000
-    
-  - name: "Faridabad"
-    url: "https://www.99acres.com/property-in-faridabad-ffid?page={}"
-    target_count: 8000
-    
-  - name: "New Delhi"
-    url: "https://www.99acres.com/property-in-new-delhi-ffid?page={}"
-    target_count: 8000
-    
-  - name: "Bhiwadi"
-    url: "https://www.99acres.com/property-in-bhiwadi-ffid?page={}"
-    target_count: 8000
+
+  # - name: "Greater Noida"
+  #   url: "https://www.99acres.com/property-in-greater-noida-ffid?page={}"
+  #   target_count: 8000
+
+  # - name: "Ghaziabad"
+  #   url: "https://www.99acres.com/property-in-ghaziabad-ffid?page={}"
+  #   target_count: 8000
+
+  # - name: "Faridabad"
+  #   url: "https://www.99acres.com/property-in-faridabad-ffid?page={}"
+  #   target_count: 8000
+
+  # - name: "New Delhi"
+  #   url: "https://www.99acres.com/property-in-new-delhi-ffid?page={}"
+  #   target_count: 8000
+
+  # - name: "Bhiwadi"
+  #   url: "https://www.99acres.com/property-in-bhiwadi-ffid?page={}"
+  #   target_count: 8000
 
 # File paths and storage
 paths:
-  data_folder: "RealEstate_ML_Data"
+  data_folder: "../../data/raw" # Save in project's data/raw folder
   output_csv: "99acres_NCR_ML_Final.csv"
   cookie_file: "cookies.json"
   checkpoint_file: "checkpoint.json"
@@ -41,14 +44,15 @@ paths:
   error_log_file: "scraper_errors.log"
 
 # Scraper behavior settings
+# ULTRA-CONSERVATIVE to avoid CAPTCHA
 scraper:
-  batch_size: 10  # Save to disk every N pages
-  consecutive_empty_limit: 5  # Stop city after N consecutive empty pages
-  coffee_break_interval: 30  # Take a break every N pages
-  coffee_break_duration: 30  # Break duration in seconds
+  batch_size: 5 # Save every 5 pages (was 10)
+  consecutive_empty_limit: 5
+  coffee_break_interval: 5 # Break every 5 pages (was 10)
+  coffee_break_duration: 300 # 5-minute breaks (was 120 seconds)
 
 # Logging configuration
 logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
-  max_bytes: 10485760  # 10MB per log file
-  backup_count: 5  # Keep 5 backup log files
+  level: "DEBUG" # DEBUG, INFO, WARNING, ERROR
+  max_bytes: 10485760 # 10MB per log file
+  backup_count: 5 # Keep 5 backup log files

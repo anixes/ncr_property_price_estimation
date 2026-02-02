@@ -1,9 +1,17 @@
 """
-99acres NCR Property Scraper - Production Ready
-================================================
+MagicBricks NCR Property Scraper - Enterprise Edition
+======================================================
 
-A robust web scraper for collecting real estate data from 99acres.com
-with anti-bot evasion, checkpoint/resume, and graceful shutdown handling.
+A robust web scraper for collecting real estate data from MagicBricks.com
+with checkpoint/resume capability, rotating logs, and graceful shutdown.
+
+Features:
+- BeautifulSoup + Requests (faster than Selenium, less CAPTCHA)
+- Automatic checkpoint/resume from interruptions
+- Rotating file handlers for logs (10MB max, 5 backups)
+- Data validation and deduplication
+- Graceful shutdown handling (Ctrl+C safe)
+- Statistics tracking and progress monitoring
 
 Author: Data Science Team
 License: MIT
@@ -13,109 +21,44 @@ import sys
 import time
 import json
 import random
-import os
 import re
-import socket
 import logging
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Set, Optional
 from pathlib import Path
+from datetime import datetime
 
-
-# ==========================================
-# DEPENDENCY CHECK (Run First)
-# ==========================================
-def check_dependencies() -> None:
-    """Verify all required packages are installed.
-    
-    Exits with clear error message if dependencies are missing.
-    """
-    missing = []
-    
-    try:
-        import pandas
-    except ImportError:
-        missing.append('pandas')
-    
-    try:
-        import yaml
-    except ImportError:
-        missing.append('pyyaml')
-    
-    try:
-        import undetected_chromedriver
-    except ImportError:
-        missing.append('undetected-chromedriver')
-    
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:
-        missing.append('beautifulsoup4')
-    
-    try:
-        import selenium
-    except ImportError:
-        missing.append('selenium')
-    
-    if missing:
-        print("\n" + "="*60)
-        print("ERROR: Missing Required Dependencies")
-        print("="*60)
-        print("\nThe following packages are not installed:")
-        for pkg in missing:
-            print(f"  - {pkg}")
-        print("\nPlease install them using:")
-        print(f"  pip install {' '.join(missing)}")
-        print("\nOr install all dependencies:")
-        print("  pip install pandas pyyaml undetected-chromedriver beautifulsoup4 selenium")
-        print("="*60 + "\n")
-        sys.exit(1)
-
-
-# Check dependencies before importing
-check_dependencies()
-
-# Now safe to import
-import pandas as pd
-import yaml
-import undetected_chromedriver as uc
+import requests
 from bs4 import BeautifulSoup
-from selenium.webdriver.common.by import By
+import pandas as pd
 
 
 # ==========================================
-# PATH RESOLUTION (Absolute Paths)
+# PATH RESOLUTION
 # ==========================================
-# Get script directory for absolute path resolution
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
+DATA_DIR = PROJECT_ROOT / "data" / "raw"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ==========================================
 # LOGGING SETUP
 # ==========================================
-def setup_logging(config: Dict) -> None:
-    """Configure rotating file handlers for logging.
-    
-    Args:
-        config: Configuration dictionary with logging settings
-    """
-    log_config = config['logging']
-    paths = config['paths']
-    
-    # Resolve absolute path for data folder
-    data_folder = SCRIPT_DIR / paths['data_folder']
-    log_dir = data_folder / 'logs'
+def setup_logging() -> None:
+    """Configure rotating file handlers for logging."""
+    log_dir = DATA_DIR / 'logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     
-    # Main logger
     logger = logging.getLogger()
-    logger.setLevel(getattr(logging, log_config['level']))
+    logger.setLevel(logging.INFO)
     
-    # Console handler (Windows-safe, no emojis in file logs)
+    # Remove existing handlers
+    logger.handlers.clear()
+    
+    # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
-    # Simple format without emojis for Windows compatibility
     console_formatter = logging.Formatter('%(message)s')
     console_handler.setFormatter(console_formatter)
     
@@ -124,13 +67,13 @@ def setup_logging(config: Dict) -> None:
         try:
             sys.stdout.reconfigure(encoding='utf-8')
         except AttributeError:
-            pass  # Python < 3.7
+            pass
     
-    # File handler (rotating) - ASCII only for Windows
+    # File handler (rotating)
     file_handler = RotatingFileHandler(
-        log_dir / paths['log_file'],
-        maxBytes=log_config['max_bytes'],
-        backupCount=log_config['backup_count'],
+        log_dir / 'magicbricks.log',
+        maxBytes=10485760,  # 10MB
+        backupCount=5,
         encoding='utf-8'
     )
     file_handler.setLevel(logging.DEBUG)
@@ -142,9 +85,9 @@ def setup_logging(config: Dict) -> None:
     
     # Error file handler (rotating)
     error_handler = RotatingFileHandler(
-        log_dir / paths['error_log_file'],
-        maxBytes=log_config['max_bytes'],
-        backupCount=log_config['backup_count'],
+        log_dir / 'magicbricks_errors.log',
+        maxBytes=10485760,
+        backupCount=5,
         encoding='utf-8'
     )
     error_handler.setLevel(logging.ERROR)
@@ -158,112 +101,118 @@ def setup_logging(config: Dict) -> None:
 # ==========================================
 # UTILITY FUNCTIONS
 # ==========================================
-def wait_for_internet() -> None:
-    """Pauses execution if internet connection is lost.
-    
-    Continuously checks connectivity and resumes when connection is restored.
-    This prevents the scraper from crashing during network interruptions.
-    """
-    while True:
-        try:
-            socket.create_connection(("8.8.8.8", 53), timeout=3)
-            return
-        except OSError:
-            logging.warning("⚠️ Internet Lost! Pausing script... (Check your connection)")
-            time.sleep(10)
-
-
-def clean_price(price_text: Optional[str]) -> Optional[float]:
-    """Converts Indian price format to numeric value.
+def extract_price(price_text: str) -> Optional[float]:
+    """Extract numeric price from text.
     
     Args:
-        price_text: Price string like '₹ 1.25 Cr' or '₹ 50 Lac'
+        price_text: Price string like '₹1.43 Cr' or '₹50 Lac'
         
     Returns:
         Numeric price value or None if parsing fails
-        
-    Examples:
-        '₹ 1.25 Cr' -> 12500000.0
-        '₹ 50 Lac' -> 5000000.0
     """
     if not price_text:
         return None
+        
+    # Handle cases like "₹1.43 Cr₹9142 per sqft" - split by ₹ and take first part
+    if price_text.count('₹') > 1:
+        parts = price_text.split('₹')
+        if len(parts) > 1:
+            price_text = parts[1]
     
-    clean = price_text.lower().replace('₹', '').strip()
-    try:
-        if 'cr' in clean:
-            return float(re.search(r'[\d\.]+', clean).group()) * 10000000
-        elif 'lac' in clean:
-            return float(re.search(r'[\d\.]+', clean).group()) * 100000
-        else:
-            return float(re.search(r'[\d\,]+', clean).group().replace(',', ''))
-    except (AttributeError, ValueError):
+    price_text = price_text.lower().replace(',', '').strip()
+    
+    # Extract number
+    match = re.search(r'([\d.]+)', price_text)
+    if not match:
         return None
+    
+    value = float(match.group(1))
+    
+    # Convert to rupees
+    if 'cr' in price_text or 'crore' in price_text:
+        value *= 10000000
+    elif 'lac' in price_text or 'lakh' in price_text:
+        value *= 100000
+    elif 'k' in price_text or 'thousand' in price_text:
+        value *= 1000
+        
+    return value
+
+
+def extract_area(area_text: str) -> Optional[float]:
+    """Extract numeric area from text.
+    
+    Args:
+        area_text: Area string like '1200 sq.ft.' or '100 sq.m.'
+        
+    Returns:
+        Area in square feet or None if parsing fails
+    """
+    if not area_text:
+        return None
+    
+    area_text = area_text.lower().replace(',', '').strip()
+    
+    # Extract number
+    match = re.search(r'([\d.]+)', area_text)
+    if not match:
+        return None
+    
+    value = float(match.group(1))
+    
+    # Convert to sq.ft if needed
+    if 'sq.m' in area_text or 'sqm' in area_text:
+        value *= 10.764  # Convert sq.m to sq.ft
+    
+    return value
 
 
 # ==========================================
 # CHECKPOINT MANAGER
 # ==========================================
 class CheckpointManager:
-    """Manages scraper progress checkpoints for resume capability.
-    
-    Saves progress every N pages to avoid I/O overhead while ensuring
-    the scraper can resume from the last checkpoint after interruptions.
-    """
+    """Manages scraper progress checkpoints for resume capability."""
     
     def __init__(self, checkpoint_file: Path, save_interval: int = 10):
         """Initialize checkpoint manager.
         
         Args:
-            checkpoint_file: Absolute path to checkpoint JSON file
-            save_interval: Save checkpoint every N pages (default: 10)
+            checkpoint_file: Path to checkpoint JSON file
+            save_interval: Save checkpoint every N pages
         """
         self.checkpoint_file = checkpoint_file
         self.save_interval = save_interval
         self.page_counter = 0
         
     def load(self) -> Optional[Dict]:
-        """Load existing checkpoint if available.
-        
-        Returns:
-            Checkpoint data dict or None if no checkpoint exists
-        """
+        """Load existing checkpoint if available."""
         if not self.checkpoint_file.exists():
             return None
             
         try:
             with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
                 checkpoint = json.load(f)
-            logging.info(f"Loaded checkpoint: {checkpoint['city']} page {checkpoint['page']}")
+            logging.info(f"📍 Resuming from: {checkpoint['current_city']} (Page {checkpoint['current_page']})")
             return checkpoint
         except (json.JSONDecodeError, KeyError) as e:
             logging.warning(f"Failed to load checkpoint: {e}")
             return None
     
     def should_save(self) -> bool:
-        """Check if it's time to save checkpoint.
-        
-        Returns:
-            True if page counter reached save interval
-        """
+        """Check if it's time to save checkpoint."""
         self.page_counter += 1
         return self.page_counter % self.save_interval == 0
     
-    def save(self, city: str, page: int, total_count: int) -> None:
-        """Save current progress to checkpoint file.
-        
-        Args:
-            city: Current city being scraped
-            page: Current page number
-            total_count: Total listings scraped so far
-        """
+    def save(self, city: str, page: int, total_count: int, finished_cities: List[str]) -> None:
+        """Save current progress to checkpoint file."""
         self.checkpoint_file.parent.mkdir(parents=True, exist_ok=True)
         
         checkpoint_data = {
-            'city': city,
-            'page': page,
+            'current_city': city,
+            'current_page': page,
+            'finished_cities': finished_cities,
             'total_scraped': total_count,
-            'timestamp': time.time()
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
         with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
@@ -276,18 +225,14 @@ class CheckpointManager:
 # DATA BUFFER
 # ==========================================
 class DataBuffer:
-    """Accumulates listings in memory and flushes to CSV in batches.
-    
-    This reduces I/O overhead by 10x compared to saving after every page.
-    Keeps data in memory between saves for performance.
-    """
+    """Accumulates listings in memory and flushes to CSV in batches."""
     
     def __init__(self, csv_path: Path, batch_size: int = 10):
         """Initialize data buffer.
         
         Args:
-            csv_path: Absolute path to output CSV file
-            batch_size: Flush buffer every N pages (default: 10)
+            csv_path: Path to output CSV file
+            batch_size: Flush buffer every N pages
         """
         self.csv_path = csv_path
         self.batch_size = batch_size
@@ -295,28 +240,16 @@ class DataBuffer:
         self.page_count = 0
         
     def add(self, listings: List[Dict]) -> None:
-        """Add listings to buffer.
-        
-        Args:
-            listings: List of property data dictionaries
-        """
+        """Add listings to buffer."""
         self.buffer.extend(listings)
         self.page_count += 1
         
     def should_flush(self) -> bool:
-        """Check if buffer should be flushed to disk.
-        
-        Returns:
-            True if page count reached batch size
-        """
+        """Check if buffer should be flushed to disk."""
         return self.page_count >= self.batch_size
     
     def flush(self) -> None:
-        """Write buffer contents to CSV file.
-        
-        Appends to existing file or creates new one with headers.
-        Clears buffer after successful write.
-        """
+        """Write buffer contents to CSV file."""
         if not self.buffer:
             logging.debug("Buffer empty, nothing to flush")
             return
@@ -329,73 +262,111 @@ class DataBuffer:
         
         df.to_csv(self.csv_path, mode=mode, header=header, index=False, encoding='utf-8')
         
-        logging.info(f"Flushed {len(self.buffer)} listings to CSV")
+        logging.info(f"💾 Flushed {len(self.buffer)} listings to CSV")
         self.buffer.clear()
         self.page_count = 0
 
 
 # ==========================================
-# PROPERTY SCRAPER
+# STATISTICS TRACKER
 # ==========================================
-class PropertyScraper:
-    """Main scraper class with anti-bot evasion and checkpoint support.
+class StatsTracker:
+    """Track scraping statistics and performance metrics."""
     
-    CRITICAL: This class preserves "messy" human-like behavior to evade
-    bot detection. Do NOT optimize delays for speed - they exist for survival.
-    """
+    def __init__(self):
+        self.start_time = time.time()
+        self.city_stats: Dict[str, int] = {}
+        self.total_listings = 0
+        self.total_pages = 0
+        self.errors = 0
+        
+    def add_listings(self, city: str, count: int) -> None:
+        """Record listings scraped for a city."""
+        self.city_stats[city] = self.city_stats.get(city, 0) + count
+        self.total_listings += count
+        self.total_pages += 1
+        
+    def add_error(self) -> None:
+        """Record an error."""
+        self.errors += 1
+        
+    def get_summary(self) -> str:
+        """Get formatted statistics summary."""
+        elapsed = time.time() - self.start_time
+        hours = elapsed / 3600
+        rate = self.total_listings / hours if hours > 0 else 0
+        
+        summary = f"\n{'='*60}\n"
+        summary += f"📊 SCRAPING STATISTICS\n"
+        summary += f"{'='*60}\n"
+        summary += f"Total Listings: {self.total_listings}\n"
+        summary += f"Total Pages: {self.total_pages}\n"
+        summary += f"Errors: {self.errors}\n"
+        summary += f"Elapsed Time: {elapsed/3600:.2f} hours\n"
+        summary += f"Rate: {rate:.1f} listings/hour\n"
+        summary += f"\nBy City:\n"
+        for city, count in self.city_stats.items():
+            summary += f"  {city}: {count}\n"
+        summary += f"{'='*60}\n"
+        
+        return summary
+
+
+# ==========================================
+# MAGICBRICKS SCRAPER
+# ==========================================
+class MagicBricksScraper:
+    """Main scraper class with enterprise features."""
     
-    def __init__(self, config_path: Path):
-        """Initialize scraper with configuration.
+    # User agent pool for rotation
+    USER_AGENTS = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+    ]
+    
+    def __init__(self):
+        """Initialize scraper with configuration."""
+        self.session = requests.Session()
+        self._rotate_user_agent()
         
-        Args:
-            config_path: Absolute path to YAML configuration file
-        """
-        # Load configuration
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
-        
-        # Setup logging
-        setup_logging(self.config)
-        
-        # Initialize components
-        paths = self.config['paths']
-        scraper_config = self.config['scraper']
-        
-        # Use absolute paths relative to script directory
-        data_folder = SCRIPT_DIR / paths['data_folder']
-        csv_path = data_folder / paths['output_csv']
-        checkpoint_path = data_folder / paths['checkpoint_file']
-        self.cookie_file = SCRIPT_DIR / paths['cookie_file']
+        self.data_buffer = DataBuffer(
+            csv_path=DATA_DIR / "magicbricks_NCR_ML.csv",
+            batch_size=10
+        )
         
         self.checkpoint = CheckpointManager(
-            checkpoint_path,
-            save_interval=scraper_config['batch_size']
+            checkpoint_file=DATA_DIR / "magicbricks_checkpoint.json",
+            save_interval=10
         )
-        self.data_buffer = DataBuffer(
-            csv_path,
-            batch_size=scraper_config['batch_size']
-        )
+        
+        self.stats = StatsTracker()
         
         # Load seen URLs from existing CSV
-        self.seen_urls: Set[str] = self._load_history(csv_path)
-        logging.info(f"History Loaded: {len(self.seen_urls)} unique listings in DB")
+        self.seen_urls: Set[str] = self._load_history()
+        logging.info(f"📚 History Loaded: {len(self.seen_urls)} unique listings in DB")
         
-        # Driver (lazy initialization)
-        self.driver: Optional[uc.Chrome] = None
+        # Load checkpoint
+        checkpoint_data = self.checkpoint.load()
+        self.finished_cities = checkpoint_data.get('finished_cities', []) if checkpoint_data else []
+        self.resume_city = checkpoint_data.get('current_city') if checkpoint_data else None
+        self.resume_page = checkpoint_data.get('current_page', 1) if checkpoint_data else 1
         
-        # State tracking
-        self.current_city: str = ""
-        self.current_page: int = 1
-        
-    def _load_history(self, csv_path: Path) -> Set[str]:
-        """Load previously scraped URLs from CSV.
-        
-        Args:
-            csv_path: Path to CSV file
-            
-        Returns:
-            Set of URLs already scraped
-        """
+    def _rotate_user_agent(self) -> None:
+        """Rotate user agent to avoid detection."""
+        self.session.headers.update({
+            'User-Agent': random.choice(self.USER_AGENTS),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        })
+    
+    def _load_history(self) -> Set[str]:
+        """Load previously scraped URLs from CSV."""
+        csv_path = DATA_DIR / "magicbricks_NCR_ML.csv"
         if not csv_path.exists():
             return set()
         
@@ -406,376 +377,327 @@ class PropertyScraper:
             logging.warning(f"Failed to load history: {e}")
             return set()
     
-    def _setup_driver(self) -> uc.Chrome:
-        """Initialize undetected Chrome driver.
-        
-        CRITICAL: Keep this simple! undetected_chromedriver is fragile.
-        Do NOT over-engineer with factories or context managers.
-        
-        Returns:
-            Configured Chrome driver instance
-        """
-        logging.info("Initializing Chrome driver...")
-        
-        options = uc.ChromeOptions()
-        options.add_argument('--disable-popup-blocking')
-        options.add_argument('--start-maximized')
-        options.add_argument('--mute-audio')
-        
-        # Windows stability fixes
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-gpu')  # Helps on Windows
-        
-        # NEVER use --headless for 99acres (instant ban)
-        
-        driver = uc.Chrome(options=options, use_subprocess=False)
-        return driver
-    
-    def _load_cookies(self) -> None:
-        """Load cookies from file to maintain user session.
-        
-        Cookies help avoid bot detection by appearing as a logged-in user.
-        """
-        if not self.cookie_file.exists():
-            logging.info("No cookie file found, running as anonymous")
-            return
-        
-        try:
-            self.driver.get("https://www.99acres.com")
-            time.sleep(3)
-            
-            with open(self.cookie_file, 'r', encoding='utf-8') as f:
-                cookies = json.load(f)
-            
-            for cookie in cookies:
-                # Fix sameSite attribute
-                if 'sameSite' in cookie and cookie['sameSite'] not in ["Strict", "Lax", "None"]:
-                    del cookie['sameSite']
-                
-                try:
-                    self.driver.add_cookie(cookie)
-                except Exception:
-                    pass  # Skip invalid cookies
-            
-            self.driver.refresh()
-            logging.info("Cookies Loaded (User Session Active)")
-            time.sleep(4)
-            
-        except Exception as e:
-            logging.warning(f"Cookie load failed: {e} (Running as Anonymous)")
-    
-    def _simulate_human_behavior(self) -> None:
-        """Simulate human scrolling with random delays.
-        
-        CRITICAL: These delays are intentionally "messy" and random.
-        DO NOT optimize them for speed. They exist to evade bot detection.
-        
-        The random.uniform() ranges were empirically tested to avoid bans.
-        """
-        # Scroll to middle (random delay)
-        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-        time.sleep(random.uniform(1.5, 3))  # KEEP RANDOM
-        
-        # Scroll to bottom (random delay)
-        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(random.uniform(1.5, 3))  # KEEP RANDOM
-    
-    def _handle_soft_ban(self) -> None:
-        """Handle 'Access Denied' soft ban with long wait.
-        
-        CRITICAL: The 2-minute wait is intentional for anti-bot evasion.
-        Do NOT reduce this delay.
-        """
-        logging.warning("SOFT BAN DETECTED! Waiting 2 minutes...")
-        time.sleep(120)  # KEEP THIS LONG - it's intentional
-        self.driver.refresh()
-    
-    def _extract_data(self, soup: BeautifulSoup, city_name: str) -> List[Dict]:
-        """Extract property data from page HTML.
-        
-        Args:
-            soup: BeautifulSoup object of page HTML
-            city_name: Current city context for listings
-            
-        Returns:
-            List of property data dictionaries
-        """
-        # Find property cards
-        cards = soup.select('div[class*="srpTuple__tupleTable"]')
-        if not cards:
-            cards = soup.select('div[class*="projectTuple__tupleTable"]')
-        
-        page_data = []
-        
-        for card in cards:
+    def get_page(self, url: str, retries: int = 3) -> Optional[BeautifulSoup]:
+        """Fetch page with retries and exponential backoff."""
+        for attempt in range(retries):
             try:
-                # Helper function for text extraction
-                def get_text(selector: str) -> str:
-                    el = card.select_one(selector)
-                    return el.get_text(strip=True) if el else ""
+                # Random delay to avoid rate limiting
+                time.sleep(random.uniform(2, 5))
                 
-                # Extract URL and check duplicates
-                link_tag = card.select_one('a[class*="srpTuple__propertyName"]')
-                url = None
-                if link_tag and link_tag.get('href'):
-                    url = link_tag.get('href')
-                    if not url.startswith('http'):
-                        url = "https://www.99acres.com" + url
+                # Rotate user agent periodically
+                if random.random() < 0.1:  # 10% chance
+                    self._rotate_user_agent()
                 
-                if not url or url in self.seen_urls:
-                    continue
+                response = self.session.get(url, timeout=30)
                 
-                # Extract text fields
-                title = get_text('a[class*="srpTuple__propertyName"]') or get_text('h2')
-                desc_text = get_text('div[class*="srpTuple__desc"]')
-                tags = [t.get_text(strip=True) for t in card.select('div[class*="srpTuple__tag"]')]
-                secondary_tags = [t.get_text(strip=True) for t in card.select('td') if t.get_text(strip=True)]
-                
-                # Create "blob" for regex feature extraction
-                blob = (title + " " + desc_text + " " + " ".join(tags) + " " + " ".join(secondary_tags)).lower()
-                
-                # Base fields
-                row = {
-                    'Title': title,
-                    'URL': url,
-                    'City': city_name,
-                    'Price_Raw': get_text('[id="srp_tuple_price"]'),
-                    'Price': clean_price(get_text('[id="srp_tuple_price"]')),
-                    'Area': get_text('[id="srp_tuple_primary_area"]'),
-                    'Location': get_text('a[class*="srpTuple__societyName"]') or get_text('td[class*="srpTuple__col3"]')
-                }
-                
-                # Property Type
-                if 'builder floor' in blob:
-                    row['Prop_Type'] = 'Builder Floor'
-                elif 'villa' in blob or 'independent house' in blob:
-                    row['Prop_Type'] = 'Independent House'
-                elif 'plot' in blob:
-                    row['Prop_Type'] = 'Plot'
+                if response.status_code == 200:
+                    return BeautifulSoup(response.content, 'html.parser')
                 else:
-                    row['Prop_Type'] = 'Apartment'
-                
-                # Configuration
-                bhk = re.search(r'(\d+)\s*(bhk|bed|bedroom)', blob)
-                row['Bedrooms'] = int(bhk.group(1)) if bhk else 0
-                
-                bath = re.search(r'(\d+)\s*(bath|toilet|washroom)', blob)
-                row['Bathrooms'] = int(bath.group(1)) if bath else 0
-                
-                balc = re.search(r'(\d+)\s*balcon', blob)
-                row['Balcony'] = int(balc.group(1)) if balc else 0
-                
-                # Facing
-                row['Facing'] = 'Unknown'
-                dirs = ['north-east', 'north-west', 'south-east', 'south-west', 'north', 'south', 'east', 'west']
-                for d in dirs:
-                    if f'{d} facing' in blob:
-                        row['Facing'] = d.title()
-                        break
-                
-                # Amenities (Binary)
-                row['Pooja_Room'] = 1 if ('pooja' in blob or 'puja' in blob) else 0
-                row['Servant_Room'] = 1 if 'servant' in blob else 0
-                row['Store_Room'] = 1 if 'store' in blob else 0
-                row['Pool'] = 1 if 'pool' in blob else 0
-                row['Gym'] = 1 if 'gym' in blob else 0
-                row['Lift'] = 1 if ('lift' in blob or 'elevator' in blob) else 0
-                row['Parking'] = 1 if 'parking' in blob else 0
-                row['Vastu_Compliant'] = 1 if 'vastu' in blob else 0
-                
-                # Furnishing
-                if 'semi' in blob:
-                    row['Furnished'] = 'Semi-Furnished'
-                elif 'fully' in blob:
-                    row['Furnished'] = 'Fully-Furnished'
-                elif 'unfurnished' in blob:
-                    row['Furnished'] = 'Unfurnished'
-                else:
-                    row['Furnished'] = 'Unknown'
-                
-                # Floor
-                floor = re.search(r'(\d+)(?:st|nd|rd|th)?\s*floor', blob)
-                row['Floor'] = int(floor.group(1)) if floor else 0
-                
-                # Only add if has valid price
-                if row['Price']:
-                    page_data.append(row)
-                    self.seen_urls.add(url)
+                    logging.warning(f"Status {response.status_code} for {url}")
                     
             except Exception as e:
-                logging.debug(f"Failed to parse card: {e}")
+                logging.error(f"Error fetching {url}: {e}")
+                if attempt < retries - 1:
+                    # Exponential backoff
+                    wait_time = (2 ** attempt) * random.uniform(3, 7)
+                    logging.info(f"Retrying in {wait_time:.1f} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    self.stats.add_error()
+        
+        return None
+    
+    def extract_listings(self, soup: BeautifulSoup, city: str) -> List[Dict]:
+        """Extract property listings from page."""
+        listings = []
+        
+        # Find property cards
+        cards = soup.select('div[class*="mb-srp__card"]')
+        if not cards:
+            cards = soup.select('div.mb-srp__list__item')
+        
+        logging.debug(f"Found {len(cards)} property cards")
+        
+        for idx, card in enumerate(cards):
+            try:
+                # Extract URL
+                link = card.select_one('a[href*="/propertyDetails"]')
+                if not link:
+                    link = card.select_one('a[href*="/property-detail"]')
+                
+                if not link:
+                    links = card.find_all('a', href=True)
+                    for l in links:
+                        if '/propertyDetails' in l['href'] or '/property-detail' in l['href']:
+                            link = l
+                            break
+                            
+                if not link or not link.get('href'):
+                    continue
+                
+                url = link.get('href')
+                if not url.startswith('http'):
+                    url = 'https://www.magicbricks.com' + url
+                
+                if url in self.seen_urls:
+                    continue
+                
+                # Extract title
+                title_elem = card.select_one('h2') or card.select_one('[class*="prop-title"]')
+                title = title_elem.get_text(strip=True) if title_elem else ""
+                
+                # Extract price
+                price_elem = card.select_one('[class*="price"]')
+                price_text = price_elem.get_text(strip=True) if price_elem else ""
+                price = extract_price(price_text)
+                
+                if not price:
+                    continue  # Skip listings without price
+                
+                # Extract area
+                area_elem = card.select_one('[class*="area"]') or card.select_one('[class*="carpet"]')
+                area_text = area_elem.get_text(strip=True) if area_elem else ""
+                area = extract_area(area_text)
+                
+                # Extract location
+                location_elem = card.select_one('[class*="location"]') or card.select_one('[class*="locality"]')
+                location = location_elem.get_text(strip=True) if location_elem else ""
+                
+                # Extract from title if not found
+                if not location and title:
+                    match = re.search(r'in\s+(.+?)(?:,|$)', title, re.IGNORECASE)
+                    if match:
+                        location = match.group(1).strip()
+                
+                # Get all text for feature extraction
+                card_text = card.get_text().lower()
+                
+                # Extract bedrooms
+                bhk_match = re.search(r'(\d+)\s*bhk', card_text)
+                bedrooms = int(bhk_match.group(1)) if bhk_match else 0
+                
+                # Extract bathrooms
+                bath_match = re.search(r'(\d+)\s*bath', card_text)
+                bathrooms = int(bath_match.group(1)) if bath_match else 0
+                
+                # Extract balconies
+                balc_match = re.search(r'(\d+)\s*balcon', card_text)
+                balcony = int(balc_match.group(1)) if balc_match else 0
+                
+                # Property type
+                prop_type = "Apartment"
+                if 'villa' in card_text or 'house' in card_text:
+                    prop_type = "Independent House"
+                elif 'plot' in card_text:
+                    prop_type = "Plot"
+                elif 'builder floor' in card_text:
+                    prop_type = "Builder Floor"
+                
+                # Furnishing
+                furnished = "Unknown"
+                if 'semi' in card_text and 'furnished' in card_text:
+                    furnished = "Semi-Furnished"
+                elif 'fully' in card_text and 'furnished' in card_text:
+                    furnished = "Fully-Furnished"
+                elif 'unfurnished' in card_text:
+                    furnished = "Unfurnished"
+                
+                # Facing
+                facing = 'Unknown'
+                dirs = ['north-east', 'north-west', 'south-east', 'south-west', 'north', 'south', 'east', 'west']
+                for d in dirs:
+                    if f'{d} facing' in card_text:
+                        facing = d.title()
+                        break
+                
+                # Floor
+                floor_match = re.search(r'(\d+)(?:st|nd|rd|th)?\s*floor', card_text)
+                floor = int(floor_match.group(1)) if floor_match else 0
+                
+                listing = {
+                    'Title': title,
+                    'URL': url,
+                    'City': city,
+                    'Price_Raw': price_text,
+                    'Price': price,
+                    'Area': area_text,
+                    'Area_SqFt': area,
+                    'Location': location or 'Unknown',
+                    'Prop_Type': prop_type,
+                    'Bedrooms': bedrooms,
+                    'Bathrooms': bathrooms,
+                    'Balcony': balcony,
+                    'Facing': facing,
+                    'Pooja_Room': 1 if 'pooja' in card_text or 'puja' in card_text else 0,
+                    'Servant_Room': 1 if 'servant' in card_text else 0,
+                    'Store_Room': 1 if 'store' in card_text else 0,
+                    'Pool': 1 if 'pool' in card_text or 'swimming' in card_text else 0,
+                    'Gym': 1 if 'gym' in card_text else 0,
+                    'Lift': 1 if 'lift' in card_text or 'elevator' in card_text else 0,
+                    'Parking': 1 if 'parking' in card_text else 0,
+                    'Vastu_Compliant': 1 if 'vastu' in card_text else 0,
+                    'Furnished': furnished,
+                    'Floor': floor,
+                    'Source': 'MagicBricks',
+                    'Scraped_Date': datetime.now().strftime("%Y-%m-%d")
+                }
+                
+                listings.append(listing)
+                self.seen_urls.add(url)
+                
+            except Exception as e:
+                logging.debug(f"Error parsing card {idx}: {e}")
                 continue
         
-        return page_data
+        logging.info(f"✅ Extracted {len(listings)} valid listings from {len(cards)} cards")
+        return listings
     
-    def _scrape_city(self, city_config: Dict) -> None:
-        """Scrape all listings for a single city.
+    def scrape_city(self, city: str, base_url: str, start_page: int = 1, max_pages: int = 200) -> None:
+        """Scrape all listings for a city."""
+        logging.info(f"\n{'='*60}")
+        logging.info(f"🚀 STARTING SCRAPE FOR: {city.upper()}")
+        logging.info(f"{'='*60}")
         
-        Args:
-            city_config: City configuration dict with name, url, target_count
-        """
-        city_name = city_config['name']
-        base_url = city_config['url']
-        target_count = city_config['target_count']
-        
-        logging.info(f"\n🚀 STARTING SCRAPE FOR: {city_name.upper()}")
-        
-        self.current_city = city_name
-        self.current_page = 1
-        city_listings_collected = 0
         consecutive_empty = 0
         
-        scraper_config = self.config['scraper']
-        
-        while city_listings_collected < target_count:
+        for page in range(start_page, max_pages + 1):
             try:
-                wait_for_internet()
+                url = base_url.format(page)
+                logging.info(f"   → {city} Page {page} | Total DB: {len(self.seen_urls)}")
                 
-                logging.info(
-                    f"   -> {city_name} Page {self.current_page} | "
-                    f"Total DB: {len(self.seen_urls)}..."
-                )
+                # Save checkpoint before fetching
+                self.checkpoint.save(city, page, len(self.seen_urls), self.finished_cities)
                 
-                # Navigate to page
-                self.driver.get(base_url.format(self.current_page))
-                
-                # Check for soft ban
-                if "Access Denied" in self.driver.title:
-                    self._handle_soft_ban()
-                    continue
-                
-                # Simulate human behavior (CRITICAL for anti-bot)
-                self._simulate_human_behavior()
-                
-                # Extract data
-                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-                new_rows = self._extract_data(soup, city_name)
-                
-                # Handle empty pages
-                if not new_rows:
+                soup = self.get_page(url)
+                if not soup:
+                    logging.warning(f"⚠️ Failed to fetch page {page}")
                     consecutive_empty += 1
-                    logging.warning(f" No new data ({consecutive_empty}/{scraper_config['consecutive_empty_limit']})")
-                    
-                    if consecutive_empty >= scraper_config['consecutive_empty_limit']:
-                        logging.info(f"Finished City: {city_name}. Moving to next.")
+                    if consecutive_empty >= 5:
                         break
-                    
-                    self.current_page += 1
-                    time.sleep(random.uniform(5, 8))  # KEEP RANDOM
                     continue
                 
-                consecutive_empty = 0
+                # Check for CAPTCHA
+                if 'captcha' in soup.get_text().lower():
+                    logging.warning("🤖 CAPTCHA detected! Waiting 2 minutes...")
+                    time.sleep(120)
+                    continue
                 
-                # Add to buffer
-                self.data_buffer.add(new_rows)
-                count = len(new_rows)
-                city_listings_collected += count
-                logging.info(f" Saved {count} new listings")
+                listings = self.extract_listings(soup, city)
+                
+                if not listings:
+                    consecutive_empty += 1
+                    logging.warning(f"⚠️ No new data ({consecutive_empty}/5)")
+                    if consecutive_empty >= 5:
+                        logging.info(f"✅ Finished {city}. Moving to next.")
+                        break
+                else:
+                    consecutive_empty = 0
+                    self.data_buffer.add(listings)
+                    self.stats.add_listings(city, len(listings))
+                    logging.info(f"💾 Saved {len(listings)} new listings")
                 
                 # Flush buffer if needed
                 if self.data_buffer.should_flush():
                     self.data_buffer.flush()
                 
-                # Save checkpoint if needed
-                if self.checkpoint.should_save():
-                    self.checkpoint.save(city_name, self.current_page, len(self.seen_urls))
-                
-                self.current_page += 1
-                
-                # Coffee break (anti-bot pattern)
-                if self.current_page % scraper_config['coffee_break_interval'] == 0:
-                    logging.info("Short break...")
-                    time.sleep(scraper_config['coffee_break_duration'])
+                # Take break every 20 pages
+                if page % 20 == 0:
+                    logging.info("☕ Taking 2-minute coffee break...")
+                    time.sleep(120)
                 
             except Exception as e:
-                logging.error(f"Error on page {self.current_page}: {e}")
+                logging.error(f"❌ Error on page {page}: {e}")
+                self.stats.add_error()
                 time.sleep(10)
-                
-                try:
-                    self.driver.refresh()
-                except Exception:
-                    logging.warning("Driver crashed, reinitializing...")
-                    self._quit_driver()
-                    self.driver = self._setup_driver()
-                    self._load_cookies()
-    
-    def _quit_driver(self) -> None:
-        """Safely quit driver with Windows error suppression."""
-        if not self.driver:
-            return
-        
-        try:
-            self.driver.quit()
-        except (OSError, Exception) as e:
-            # Suppress Windows "handle is invalid" errors
-            if 'WinError 6' not in str(e):
-                logging.debug(f"Driver quit error (suppressed): {e}")
     
     def run(self) -> None:
-        """Main scraper execution loop."""
-        # Initialize driver
-        self.driver = self._setup_driver()
-        self._load_cookies()
+        """Run scraper for all cities with resume support."""
+        cities = {
+            'Noida': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Noida&page={}',
+            'Gurgaon': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Gurgaon&page={}',
+            'Greater Noida': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Greater-Noida&page={}',
+            'Ghaziabad': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Ghaziabad&page={}',
+            'Faridabad': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Faridabad&page={}',
+            'New Delhi': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=New-Delhi&page={}',
+            'Delhi': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Delhi&page={}',
+            'Bhiwadi': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Bhiwadi&page={}',
+            'Meerut': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Meerut&page={}',
+            'Panipat': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Panipat&page={}',
+            'Sonipat': 'https://www.magicbricks.com/property-for-sale/residential-real-estate?bedroom=&proptype=Multistorey-Apartment,Builder-Floor-Apartment,Penthouse,Studio-Apartment,Residential-House,Villa&cityName=Sonipat&page={}',
+        }
         
-        # Scrape each city
-        for city_config in self.config['cities']:
-            self._scrape_city(city_config)
+        try:
+            for city, url_template in cities.items():
+                # Skip already finished cities
+                if city in self.finished_cities:
+                    logging.info(f"⏭️ Skipping {city} (already finished)")
+                    continue
+                
+                # If resuming, skip cities until we hit the resume city
+                if self.resume_city and city != self.resume_city:
+                    logging.info(f"⏭️ Skipping {city} (waiting to reach {self.resume_city})")
+                    continue
+                
+                # Start scraping
+                current_start_page = self.resume_page if city == self.resume_city else 1
+                
+                # Clear resume info once we've started the resume city
+                self.resume_city = None
+                self.resume_page = 1
+                
+                self.scrape_city(city, url_template, start_page=current_start_page)
+                
+                # Mark city as finished
+                if city not in self.finished_cities:
+                    self.finished_cities.append(city)
+                self.checkpoint.save(city, 1, len(self.seen_urls), self.finished_cities)
+                self.data_buffer.flush()
         
-        logging.info("\nMISSION ACCOMPLISHED: All cities scraped.")
+        except KeyboardInterrupt:
+            logging.warning("\n⚠️ Ctrl+C detected! Saving data...")
+        
+        except Exception as e:
+            logging.error(f"❌ Fatal error: {e}", exc_info=True)
+        
+        finally:
+            self.data_buffer.flush()
+            logging.info(self.stats.get_summary())
+            logging.info(f"\n✅ SCRAPING COMPLETE! Total: {len(self.seen_urls)} listings")
 
 
 # ==========================================
 # MAIN ENTRY POINT
 # ==========================================
 def main():
-    """Main execution with graceful shutdown handling.
+    """Main execution with graceful shutdown handling."""
+    setup_logging()
     
-    CRITICAL: The finally block ensures data is saved even on Ctrl+C.
-    """
-    # Use absolute path for config
-    config_path = SCRIPT_DIR / 'config.yaml'
-    
-    if not config_path.exists():
-        print(f"\nERROR: Config file not found at: {config_path}")
-        print("Please ensure config.yaml exists in the same directory as this script.\n")
-        sys.exit(1)
+    logging.info("="*60)
+    logging.info("🏠 MagicBricks NCR Property Scraper - Enterprise Edition")
+    logging.info("="*60)
     
     scraper = None
     
     try:
-        scraper = PropertyScraper(config_path)
+        scraper = MagicBricksScraper()
         scraper.run()
         
     except KeyboardInterrupt:
-        logging.warning("\nCtrl+C detected! Saving pending data...")
+        logging.warning("\n⚠️ Ctrl+C detected! Saving pending data...")
         
     except Exception as e:
-        logging.error(f"Fatal error: {e}", exc_info=True)
+        logging.error(f"❌ Fatal error: {e}", exc_info=True)
         
     finally:
         if scraper:
-            # CRITICAL: Always flush buffer and save checkpoint before exit
-            logging.info("Performing graceful shutdown...")
+            logging.info("🔄 Performing graceful shutdown...")
             
             try:
                 scraper.data_buffer.flush()
             except Exception as e:
                 logging.error(f"Error flushing buffer: {e}")
             
-            try:
-                scraper.checkpoint.save(
-                    scraper.current_city,
-                    scraper.current_page,
-                    len(scraper.seen_urls)
-                )
-            except Exception as e:
-                logging.error(f"Error saving checkpoint: {e}")
-            
-            # Safe driver quit (Windows compatible)
-            scraper._quit_driver()
-            
-            logging.info("Graceful shutdown complete")
+            logging.info("✅ Graceful shutdown complete")
 
 
 if __name__ == "__main__":
