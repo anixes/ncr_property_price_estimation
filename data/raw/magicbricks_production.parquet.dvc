@@ -1,0 +1,5 @@
+outs:
+- md5: 81bd4558f97e805a8326a4b5c3d8617d
+  size: 1093324
+  hash: md5
+  path: magicbricks_production.parquet
