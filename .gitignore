@@ -1,5 +1,14 @@
 # Data
-/data/
+# Ignore the large data files
+/data/raw/*.parquet
+/data/raw/*.csv
+/data/raw/*.json
+/data/interim/*.parquet
+/data/processed/*.parquet
+
+# allow Git to track the DVC metadata files
+!/data/**/*.dvc
+!/data/**/.gitignore
 
 # Mac OS-specific storage files
 .DS_Store
