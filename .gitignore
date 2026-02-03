@@ -1,3 +1,7 @@
+# Scraped/Debug HTML files (may contain embedded API keys)
+*.html
+full_page*.html
+
 # Data
 # Ignore the large data files
 /data/raw/*.parquet
