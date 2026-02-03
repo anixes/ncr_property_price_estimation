@@ -2,6 +2,17 @@
 *.html
 full_page*.html
 
+# Debug/temp scripts (usually one-off utilities)
+test_*.py
+!tests/test_*.py
+fix_*.py
+preview_*.py
+cleanup_*.ps1
+
+# Cookies and session data
+cookies.json
+session*.json
+
 # Data
 # Ignore the large data files
 /data/raw/*.parquet
