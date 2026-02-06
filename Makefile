@@ -1,86 +1,37 @@
-#################################################################################
-# GLOBALS                                                                       #
-#################################################################################
+.PHONY: ingest ingest-test clean help
 
-PROJECT_NAME = ncr_property_price_estimation
-PYTHON_VERSION = 3.10
-PYTHON_INTERPRETER = python
-
-#################################################################################
-# COMMANDS                                                                      #
-#################################################################################
-
-
-## Install Python dependencies
-.PHONY: requirements
-requirements:
-	conda env update --name $(PROJECT_NAME) --file environment.yml --prune
-	
-
-
-
-## Delete all compiled Python files
-.PHONY: clean
-clean:
-	find . -type f -name "*.py[co]" -delete
-	find . -type d -name "__pycache__" -delete
-
-
-## Lint using ruff (use `make format` to do formatting)
-.PHONY: lint
-lint:
-	ruff format --check
-	ruff check
-
-## Format source code with ruff
-.PHONY: format
-format:
-	ruff check --fix
-	ruff format
-
-
-
-## Run tests
-.PHONY: test
-test:
-	python -m pytest tests
-
-
-## Set up Python interpreter environment
-.PHONY: create_environment
-create_environment:
-	conda env create --name $(PROJECT_NAME) -f environment.yml
-	
-	@echo ">>> conda env created. Activate with:\nconda activate $(PROJECT_NAME)"
-	
-
-
-
-#################################################################################
-# PROJECT RULES                                                                 #
-#################################################################################
-
-
-## Make dataset
-.PHONY: data
-data: requirements
-	$(PYTHON_INTERPRETER) ncr_property_price_estimation/dataset.py
-
-
-#################################################################################
-# Self Documenting Commands                                                     #
-#################################################################################
-
-.DEFAULT_GOAL := help
-
-define PRINT_HELP_PYSCRIPT
-import re, sys; \
-lines = '\n'.join([line for line in sys.stdin]); \
-matches = re.findall(r'\n## (.*)\n[\s\S]+?\n([a-zA-Z_-]+):', lines); \
-print('Available rules:\n'); \
-print('\n'.join(['{:25}{}'.format(*reversed(match)) for match in matches]))
-endef
-export PRINT_HELP_PYSCRIPT
-
+# Default target
 help:
-	@$(PYTHON_INTERPRETER) -c "${PRINT_HELP_PYSCRIPT}" < $(MAKEFILE_LIST)
+	@echo "MagicBricks Production Scraper - Makefile"
+	@echo "=========================================="
+	@echo ""
+	@echo "Available targets:"
+	@echo "  make ingest          - Run full scraper (all cities)"
+	@echo "  make ingest-test     - Test scraper (Noida, 10 pages)"
+	@echo "  make ingest-gurgaon  - Scrape only Gurgaon"
+	@echo "  make clean           - Remove output files"
+	@echo ""
+
+# Run full scraper
+ingest:
+	python ncr_property_price_estimation/data/ingest.py
+
+# Test run (single city, limited pages)
+ingest-test:
+	python ncr_property_price_estimation/data/ingest.py --city noida --max-pages 10
+
+# Single city targets
+ingest-gurgaon:
+	python ncr_property_price_estimation/data/ingest.py --city gurgaon
+
+ingest-noida:
+	python ncr_property_price_estimation/data/ingest.py --city noida
+
+ingest-delhi:
+	python ncr_property_price_estimation/data/ingest.py --city delhi
+
+# Clean output files
+clean:
+	rm -f data/raw/magicbricks_production.parquet
+	rm -f data/raw/checkpoint_production.json
+	@echo "Cleaned output files"

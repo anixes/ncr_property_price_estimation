@@ -1,0 +1,7 @@
+# Production Scraper Dependencies
+pandera>=0.17.0
+pyarrow>=14.0.0
+tenacity>=8.2.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+pandas>=2.0.0
